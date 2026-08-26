@@ -5,6 +5,7 @@
 
 #include "neroued/3mf/error.h"
 
+#include "internal/mesh_analysis.h"
 #include "internal/validate.h"
 #include "internal/watermark.h"
 #include "opc.h"
@@ -95,6 +96,44 @@ std::size_t EstimateOutputSize(const Document &doc, const WriteOptions &opts) {
     return raw;
 }
 
+std::vector<detail::TriangleWritePlan>
+BuildTriangleWritePlans(const Document &doc, const WriteOptions &opts,
+                        std::vector<std::vector<uint8_t>> &emit_masks) {
+    std::vector<detail::TriangleWritePlan> plans(doc.objects.size());
+    emit_masks.clear();
+    emit_masks.reserve(doc.objects.size());
+
+    for (std::size_t i = 0; i < doc.objects.size(); ++i) {
+        const auto &obj = doc.objects[i];
+        auto &plan = plans[i];
+        if (obj.mesh.vertices.empty()) { continue; }
+
+        plan.written_triangle_count = obj.mesh.triangles.size();
+        if (opts.triangle_write_mode != TriangleWriteMode::FilterDegenerate) { continue; }
+
+        auto analysis = AnalyzeMesh(obj.mesh, TriangleWriteMode::FilterDegenerate);
+        plan.written_triangle_count = analysis.written_triangle_count;
+        if (plan.written_triangle_count == 0) {
+            throw InputError("Object \"" + obj.name +
+                             "\" has no triangles remaining after degenerate filtering");
+        }
+        if (analysis.degenerate_count == 0) { continue; }
+
+        emit_masks.emplace_back(obj.mesh.triangles.size(), 0);
+        auto &mask = emit_masks.back();
+        auto vcount = obj.mesh.vertices.size();
+        for (std::size_t ti = 0; ti < obj.mesh.triangles.size(); ++ti) {
+            const auto &tri = obj.mesh.triangles[ti];
+            if (detail::IsOutOfRange(tri, vcount)) { continue; }
+            if (detail::IsDegenerateTriangle(tri, obj.mesh.vertices)) { continue; }
+            mask[ti] = 1;
+        }
+        plan.emit_mask = mask;
+    }
+
+    return plans;
+}
+
 void WriteAllEntries(detail::StreamingZipWriter &zip, const Document &doc,
                      const WriteOptions &opts) {
     auto parts = detail::BuildOpcParts(doc);
@@ -102,10 +141,13 @@ void WriteAllEntries(detail::StreamingZipWriter &zip, const Document &doc,
         zip.WriteWholeEntry(part.path_in_zip, std::span<const uint8_t>(part.data));
     }
 
+    std::vector<std::vector<uint8_t>> emit_masks;
+    auto triangle_write_plans = BuildTriangleWritePlans(doc, opts, emit_masks);
+
     std::vector<uint8_t> rotation_table;
     if (!opts.watermark.payload.empty()) {
         std::size_t total_tri = 0;
-        for (const auto &obj : doc.objects) { total_tri += obj.mesh.triangles.size(); }
+        for (const auto &plan : triangle_write_plans) { total_tri += plan.written_triangle_count; }
         rotation_table = detail::BuildRotationTable(opts.watermark.payload, opts.watermark.key,
                                                     opts.watermark.repetition, total_tri);
     }
@@ -124,7 +166,7 @@ void WriteAllEntries(detail::StreamingZipWriter &zip, const Document &doc,
 
             zip.BeginDeflateEntry("3D/Objects/object_1.model");
             detail::StreamMeshXml(merged_doc, detail::MeshXmlFormat::ObjectsModel, opts.compact_xml,
-                                  opts.vertex_precision, rt, 0, zip_sink);
+                                  opts.vertex_precision, rt, 0, triangle_write_plans, zip_sink);
             zip.EndEntry();
         } else {
             std::size_t tri_offset = 0;
@@ -139,17 +181,19 @@ void WriteAllEntries(detail::StreamingZipWriter &zip, const Document &doc,
                 single_doc.custom_namespaces = doc.custom_namespaces;
 
                 zip.BeginDeflateEntry(ext_path);
-                detail::StreamMeshXml(single_doc, detail::MeshXmlFormat::ObjectsModel,
-                                      opts.compact_xml, opts.vertex_precision, rt, tri_offset,
-                                      zip_sink);
+                detail::StreamMeshXml(
+                    single_doc, detail::MeshXmlFormat::ObjectsModel, opts.compact_xml,
+                    opts.vertex_precision, rt, tri_offset,
+                    std::span<const detail::TriangleWritePlan>(triangle_write_plans.data() + i, 1),
+                    zip_sink);
                 zip.EndEntry();
-                tri_offset += doc.objects[i].mesh.triangles.size();
+                tri_offset += triangle_write_plans[i].written_triangle_count;
             }
         }
     } else {
         zip.BeginDeflateEntry("3D/3dmodel.model");
         detail::StreamMeshXml(doc, detail::MeshXmlFormat::FlatModel, opts.compact_xml,
-                              opts.vertex_precision, rt, 0, zip_sink);
+                              opts.vertex_precision, rt, 0, triangle_write_plans, zip_sink);
         zip.EndEntry();
     }
 
@@ -168,14 +212,14 @@ void ValidateZipOutput(const std::vector<uint8_t> &zip_bytes) {
     }
 }
 
-void ValidateDocumentPreWrite(const Document &doc) {
-    detail::ValidateDocument(doc);
+void ValidateDocumentPreWrite(const Document &doc, const WriteOptions &opts) {
+    detail::ValidateDocument(doc, opts.triangle_write_mode == TriangleWriteMode::Keep);
 }
 
 } // namespace
 
 std::vector<uint8_t> WriteToBuffer(const Document &doc, const WriteOptions &opts) {
-    ValidateDocumentPreWrite(doc);
+    ValidateDocumentPreWrite(doc, opts);
 
     std::vector<uint8_t> zip_bytes;
     zip_bytes.reserve(EstimateOutputSize(doc, opts));
@@ -187,7 +231,7 @@ std::vector<uint8_t> WriteToBuffer(const Document &doc, const WriteOptions &opts
 
 void WriteToFile(const std::filesystem::path &path, const Document &doc, const WriteOptions &opts) {
     if (path.empty()) { throw InputError("3MF output path is empty"); }
-    ValidateDocumentPreWrite(doc);
+    ValidateDocumentPreWrite(doc, opts);
 
     auto dir = path.parent_path();
     if (!dir.empty()) {
@@ -208,7 +252,7 @@ void WriteToFile(const std::filesystem::path &path, const Document &doc, const W
 }
 
 void WriteToStream(std::ostream &out, const Document &doc, const WriteOptions &opts) {
-    ValidateDocumentPreWrite(doc);
+    ValidateDocumentPreWrite(doc, opts);
 
     detail::StreamingZipWriter zip(out, opts);
     WriteAllEntries(zip, doc, opts);

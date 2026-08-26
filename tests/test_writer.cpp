@@ -63,6 +63,53 @@ bool ContainsSubstring(const std::vector<uint8_t> &data, const std::string &need
     return it != data.end();
 }
 
+std::size_t CountSubstringOccurrences(const std::vector<uint8_t> &data, const std::string &needle) {
+    if (needle.empty() || data.size() < needle.size()) { return 0; }
+    std::size_t count = 0;
+    auto begin = data.begin();
+    while (true) {
+        auto it = std::search(begin, data.end(), needle.begin(), needle.end());
+        if (it == data.end()) { return count; }
+        ++count;
+        begin = it + 1;
+    }
+}
+
+n3mf::Document MakeDegenerateTriangleDocument(bool with_properties = false) {
+    n3mf::Mesh mesh;
+    mesh.vertices = {{0, 0, 0}, {10, 0, 0}, {5, 10, 0}};
+    mesh.triangles = {{0, 0, 1}, {0, 1, 2}};
+    if (with_properties) { mesh.triangle_properties = {{1, 1, 1, 1}, {1, 0, 0, 0}}; }
+
+    n3mf::DocumentBuilder builder;
+    uint32_t obj;
+    if (with_properties) {
+        auto mat =
+            builder.AddBaseMaterialGroup({{"Red", {255, 0, 0, 255}}, {"Blue", {0, 0, 255, 255}}});
+        obj = builder.AddMeshObject("Degenerate", std::move(mesh), mat, 0);
+    } else {
+        obj = builder.AddMeshObject("Degenerate", std::move(mesh));
+    }
+    builder.AddBuildItem(obj);
+    return builder.Build();
+}
+
+n3mf::Mesh MakeMeshWithDegenerateTriangles(std::size_t valid_triangles,
+                                           std::size_t degenerate_triangles) {
+    n3mf::Mesh mesh;
+    mesh.vertices.reserve(valid_triangles + 2);
+    mesh.vertices.push_back({0, 0, 0});
+    mesh.vertices.push_back({1, 0, 0});
+    for (std::size_t i = 0; i < valid_triangles; ++i) {
+        mesh.vertices.push_back({0.5f, static_cast<float>(i + 1), 0});
+    }
+    for (std::size_t i = 0; i < valid_triangles; ++i) {
+        mesh.triangles.push_back({0, 1, static_cast<uint32_t>(i + 2)});
+    }
+    for (std::size_t i = 0; i < degenerate_triangles; ++i) { mesh.triangles.push_back({0, 0, 1}); }
+    return mesh;
+}
+
 } // namespace
 
 TEST(Writer, EmptyDocumentThrows) {
@@ -289,14 +336,14 @@ TEST(Writer, TrianglePropertiesInOutput) {
     n3mf::Mesh mesh;
     mesh.vertices = {{0, 0, 0}, {10, 0, 0}, {5, 10, 0}};
     mesh.triangles = {{0, 1, 2}};
-    mesh.triangle_properties = {{1, 0, 0, 1}};
+    mesh.triangle_properties = {{1, 0, 0, 0}};
 
     n3mf::DocumentBuilder builder;
-    builder.AddBaseMaterialGroup({
+    auto mat = builder.AddBaseMaterialGroup({
         {"Red", {255, 0, 0, 255}},
         {"Blue", {0, 0, 255, 255}},
     });
-    auto obj = builder.AddMeshObject("Colored", std::move(mesh));
+    auto obj = builder.AddMeshObject("Colored", std::move(mesh), mat, 0);
     builder.AddBuildItem(obj);
 
     auto doc = builder.Build();
@@ -306,7 +353,59 @@ TEST(Writer, TrianglePropertiesInOutput) {
 
     EXPECT_TRUE(ContainsSubstring(buf, "pid=\"1\""));
     EXPECT_TRUE(ContainsSubstring(buf, "p1=\"0\""));
-    EXPECT_TRUE(ContainsSubstring(buf, "p3=\"1\""));
+    EXPECT_TRUE(ContainsSubstring(buf, "p3=\"0\""));
+}
+
+TEST(Writer, TriangleWriteModeKeepRejectsRepeatedVertexIndices) {
+    auto doc = MakeDegenerateTriangleDocument();
+    n3mf::WriteOptions opts;
+    opts.compression = n3mf::WriteOptions::Compression::Store;
+
+    EXPECT_THROW(n3mf::WriteToBuffer(doc, opts), n3mf::InputError);
+}
+
+TEST(Writer, TriangleWriteModeFilterDegenerateSkipsTrianglesAndProperties) {
+    auto doc = MakeDegenerateTriangleDocument(true);
+    n3mf::WriteOptions opts;
+    opts.compression = n3mf::WriteOptions::Compression::Store;
+    opts.triangle_write_mode = n3mf::TriangleWriteMode::FilterDegenerate;
+
+    auto buf = n3mf::WriteToBuffer(doc, opts);
+    EXPECT_EQ(CountSubstringOccurrences(buf, "<triangle v1=\""), 1u);
+    EXPECT_FALSE(ContainsSubstring(buf, "p1=\"1\""));
+    EXPECT_TRUE(ContainsSubstring(buf, "pid=\"1\""));
+    EXPECT_TRUE(ContainsSubstring(buf, "p2=\"0\""));
+}
+
+TEST(Writer, TriangleWriteModeKeepPreservesZeroAreaTriangle) {
+    n3mf::Mesh mesh;
+    mesh.vertices = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}};
+    mesh.triangles = {{0, 1, 2}};
+
+    n3mf::DocumentBuilder builder;
+    auto obj = builder.AddMeshObject("ZeroArea", std::move(mesh));
+    builder.AddBuildItem(obj);
+    auto doc = builder.Build();
+
+    n3mf::WriteOptions opts;
+    opts.compression = n3mf::WriteOptions::Compression::Store;
+    auto buf = n3mf::WriteToBuffer(doc, opts);
+    EXPECT_EQ(CountSubstringOccurrences(buf, "<triangle v1=\""), 1u);
+}
+
+TEST(Writer, TriangleWriteModeFilterRejectsEmptyResult) {
+    n3mf::Mesh mesh;
+    mesh.vertices = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}};
+    mesh.triangles = {{0, 1, 2}};
+
+    n3mf::DocumentBuilder builder;
+    auto obj = builder.AddMeshObject("ZeroArea", std::move(mesh));
+    builder.AddBuildItem(obj);
+    auto doc = builder.Build();
+
+    n3mf::WriteOptions opts;
+    opts.triangle_write_mode = n3mf::TriangleWriteMode::FilterDegenerate;
+    EXPECT_THROW(n3mf::WriteToBuffer(doc, opts), n3mf::InputError);
 }
 
 // -- New feature tests --
@@ -787,12 +886,14 @@ TEST(Writer, WatermarkWithTriangleProperties) {
     for (int i = 0; i < 100; ++i) { mesh.vertices.push_back({0.5f, static_cast<float>(i + 1), 0}); }
     for (int i = 0; i < 100; ++i) {
         mesh.triangles.push_back({0, 1, static_cast<uint32_t>(i + 2)});
-        mesh.triangle_properties.push_back({1, 0, static_cast<uint32_t>(i % 2), 0});
+        auto material_index = static_cast<uint32_t>(i % 2);
+        mesh.triangle_properties.push_back({1, material_index, material_index, material_index});
     }
 
     n3mf::DocumentBuilder builder;
-    builder.AddBaseMaterialGroup({{"Red", {255, 0, 0, 255}}, {"Blue", {0, 0, 255, 255}}});
-    auto obj = builder.AddMeshObject("Colored", std::move(mesh));
+    auto mat =
+        builder.AddBaseMaterialGroup({{"Red", {255, 0, 0, 255}}, {"Blue", {0, 0, 255, 255}}});
+    auto obj = builder.AddMeshObject("Colored", std::move(mesh), mat, 0);
     builder.AddBuildItem(obj);
 
     auto doc = builder.Build();
@@ -906,6 +1007,26 @@ TEST(WatermarkDetect, RoundTripNoKey) {
     EXPECT_EQ(result.payload, opts.watermark.payload);
 }
 
+TEST(WatermarkDetect, RoundTripFilteredTriangles) {
+    n3mf::DocumentBuilder builder;
+    auto obj = builder.AddMeshObject("Filtered", MakeMeshWithDegenerateTriangles(1000, 200));
+    builder.AddBuildItem(obj);
+
+    auto doc = builder.Build();
+    n3mf::WriteOptions opts;
+    opts.compression = n3mf::WriteOptions::Compression::Store;
+    opts.triangle_write_mode = n3mf::TriangleWriteMode::FilterDegenerate;
+    opts.watermark.payload = {0xDE, 0xAD};
+    opts.watermark.key = {0xAA, 0xBB};
+    opts.watermark.repetition = 1;
+
+    auto buf = n3mf::WriteToBuffer(doc, opts);
+    auto result = n3mf::DetectWatermark(buf, opts.watermark.key);
+    EXPECT_TRUE(result.has_l2_signature);
+    EXPECT_TRUE(result.has_l1_payload);
+    EXPECT_EQ(result.payload, opts.watermark.payload);
+}
+
 TEST(WatermarkDetect, L2OnlyNoWatermark) {
     auto doc = MakeSingleTriangleDocument();
     n3mf::WriteOptions opts;
@@ -965,6 +1086,31 @@ TEST(WatermarkDetect, ProductionModePerObject) {
 
     auto buf = n3mf::WriteToBuffer(doc, opts);
 
+    auto result = n3mf::DetectWatermark(buf, opts.watermark.key);
+    EXPECT_TRUE(result.has_l2_signature);
+    EXPECT_TRUE(result.has_l1_payload);
+    EXPECT_EQ(result.payload, opts.watermark.payload);
+}
+
+TEST(WatermarkDetect, ProductionModePerObjectFilteredTriangles) {
+    n3mf::DocumentBuilder builder;
+    builder.EnableProduction();
+
+    for (int i = 0; i < 2; ++i) {
+        auto mesh = MakeMeshWithDegenerateTriangles(800, 100);
+        auto obj = builder.AddMeshObject("Part_" + std::to_string(i), std::move(mesh));
+        builder.AddBuildItem(obj);
+    }
+
+    auto doc = builder.Build();
+    n3mf::WriteOptions opts;
+    opts.compression = n3mf::WriteOptions::Compression::Store;
+    opts.triangle_write_mode = n3mf::TriangleWriteMode::FilterDegenerate;
+    opts.watermark.payload = {0xCA, 0xFE};
+    opts.watermark.key = {0x11, 0x22, 0x33};
+    opts.watermark.repetition = 1;
+
+    auto buf = n3mf::WriteToBuffer(doc, opts);
     auto result = n3mf::DetectWatermark(buf, opts.watermark.key);
     EXPECT_TRUE(result.has_l2_signature);
     EXPECT_TRUE(result.has_l1_payload);

@@ -46,7 +46,7 @@ If OpenMP is not found, the library builds and works correctly using serial proc
 include(FetchContent)
 FetchContent_Declare(neroued_3mf
     GIT_REPOSITORY https://github.com/neroued/neroued_3mf.git
-    GIT_TAG v0.1.0)
+    GIT_TAG v0.4.0)
 set(N3MF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(neroued_3mf)
 target_link_libraries(your_target PRIVATE neroued::3mf)
@@ -75,6 +75,21 @@ Quick start with a single include:
 ```
 
 You can also include individual headers (`types.h`, `builder.h`, `writer.h`, etc.) for finer-grained control.
+
+## Runtime Write Options
+
+`WriteOptions` is a runtime API type (not a CMake option), but projects often centralize it in their integration layer. Relevant fields for this release:
+
+- `triangle_write_mode = Keep` (default): preserve historical writer behavior
+- `triangle_write_mode = FilterDegenerate`: skip index-degenerate and area-degenerate triangles during XML output
+
+Typical integration pattern:
+
+```cpp
+neroued_3mf::WriteOptions opts;
+opts.triangle_write_mode = neroued_3mf::TriangleWriteMode::FilterDegenerate;
+neroued_3mf::WriteToFile("output.3mf", doc, opts);
+```
 
 ## Python Bindings
 
@@ -113,7 +128,7 @@ Python package version is derived automatically from git tags via [setuptools_sc
 
 - Tag format: `v<major>.<minor>.<patch>` (e.g. `v0.2.0`)
 - Pre-release tags: `v0.2.0rc1`, `v0.2.0a1`, `v0.2.0b1`
-- Without a tag, development versions like `0.1.0.dev3+g1a2b3c4` are generated
+- Without a tag, development versions like `0.4.1.dev3+g1a2b3c4` are generated
 
 To release a new version:
 
@@ -130,14 +145,14 @@ Compile-time version info is available via `<neroued/3mf/version.h>` (generated 
 
 ```cpp
 NEROUED_3MF_VERSION_MAJOR   // e.g. 0
-NEROUED_3MF_VERSION_MINOR   // e.g. 1
+NEROUED_3MF_VERSION_MINOR   // e.g. 4
 NEROUED_3MF_VERSION_PATCH   // e.g. 0
-NEROUED_3MF_VERSION_STRING  // e.g. "0.1.0"
+NEROUED_3MF_VERSION_STRING  // e.g. "0.4.0"
 ```
 
 ## CI/CD
 
 The project uses two GitHub Actions workflows:
 
-- **`ci.yml`** — Runs on every PR and push to `master`. Includes clang-format checks, C++ build & test (Linux/macOS/Windows), and Python build & test (3.10–3.13 x 3 OS).
+- **`ci.yml`** — Runs on every PR and push to `master`. Includes clang-format checks, C++ build & test (Linux/macOS/Windows), and Python build & test (3.10–3.14 x 3 OS).
 - **`wheels.yml`** — Triggered by `v*` tags. Builds wheels via cibuildwheel on all platforms, builds sdist, and publishes to PyPI/TestPyPI using OIDC Trusted Publishing.

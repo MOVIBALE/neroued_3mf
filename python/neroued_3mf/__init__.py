@@ -3,6 +3,9 @@
 
 """neroued_3mf — lightweight Python bindings for writing 3MF files."""
 
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _distribution_version
+
 from neroued_3mf._neroued_3mf import (
     BBox,
     BaseMaterial,
@@ -19,6 +22,7 @@ from neroued_3mf._neroued_3mf import (
     IndexTriangle,
     InputError,
     Mesh,
+    MeshAnalysis,
     Metadata,
     Object,
     ObjectType,
@@ -26,6 +30,7 @@ from neroued_3mf._neroued_3mf import (
     Thumbnail,
     Transform,
     TriangleProperty,
+    TriangleWriteMode,
     Unit,
     ValidationResult,
     Vec3f,
@@ -33,13 +38,17 @@ from neroued_3mf._neroued_3mf import (
     WatermarkResult,
     WriteOptions,
     XmlNamespace,
+    analyze_mesh,
     detect_watermark,
     has_l2_signature,
     write_to_buffer,
     write_to_file,
 )
 
-__version__ = "0.1.0"
+try:
+    __version__ = _distribution_version("neroued-3mf")
+except _PackageNotFoundError:
+    __version__ = "0+unknown"
 
 __all__ = [
     "BBox",
@@ -57,6 +66,7 @@ __all__ = [
     "IndexTriangle",
     "InputError",
     "Mesh",
+    "MeshAnalysis",
     "Metadata",
     "ObjectType",
     "Object",
@@ -64,6 +74,7 @@ __all__ = [
     "Thumbnail",
     "Transform",
     "TriangleProperty",
+    "TriangleWriteMode",
     "Unit",
     "ValidationResult",
     "Vec3f",
@@ -71,6 +82,7 @@ __all__ = [
     "WatermarkResult",
     "WriteOptions",
     "XmlNamespace",
+    "analyze_mesh",
     "detect_watermark",
     "has_l2_signature",
     "write_to_buffer",

@@ -8,13 +8,17 @@ All public types reside in the `neroued_3mf` namespace. Include `<neroued/3mf/ne
 |------|-------------|
 | `Vec3f` | 3D float vector `{x, y, z}` — binary-compatible with common 3D library vector types |
 | `IndexTriangle` | Triangle indices `{v1, v2, v3}` as `uint32_t` |
+| `TriangleWriteMode` | Triangle write policy: `Keep` or `FilterDegenerate` |
 | `TriangleProperty` | Per-triangle material property `{pid, p1, p2, p3}` |
 | `MeshView` | Non-owning spans (`std::span`) over external vertex/index/property buffers |
 | `Mesh` | Owning mesh with `Validate()`, `RemoveDegenerateTriangles()`, `Append()`, `ComputeBoundingBox()` |
+| `MeshAnalysis` | Shared mesh analysis result (`bbox`, source/written triangle counts, degenerate count, out-of-range count) |
 | `Color` | RGBA color with `ToHex()` / `FromHex()` conversion |
 | `Transform` | 3MF affine transform (3x4 matrix) with `Identity()`, `Translation()`, `IsIdentity()` |
 
 `Mesh` implicitly converts to `MeshView`, so all APIs accepting `MeshView` also accept `Mesh`.
+
+`Mesh::Append()` is safe for self-append and validates the source indices before changing the destination. When both meshes already contain triangles, they must either have one `TriangleProperty` per triangle or both have no per-triangle properties; mixing these layouts is rejected because the missing entries cannot be represented without inventing an invalid property resource ID. An empty destination adopts the source layout.
 
 ### Zero-copy Helpers
 
@@ -26,6 +30,19 @@ Helper functions for constructing `MeshView` from layout-compatible external dat
 | `AsVertexSpan(const V*, size_t)` | Reinterpret a layout-compatible custom struct as `span<const Vec3f>` (requires concept constraints: standard layout, trivially copyable, `sizeof(V) == sizeof(Vec3f)`) |
 | `AsTriangleSpan(const uint32_t*, size_t)` | Reinterpret a flat `uint32_t` array as `span<const IndexTriangle>` (3 values per triangle) |
 | `AsTriangleSpan(const T*, size_t)` | Reinterpret a layout-compatible custom struct as `span<const IndexTriangle>` (same concept constraints) |
+| `AsSignedIndexSpan(const int32_t*, size_t)` | Reinterpret a flat signed index buffer as `span<const int32_t>` (3 values per triangle) |
+| `AsSignedIndexSpan(const T*, size_t)` | Reinterpret a layout-compatible signed triangle struct as `span<const int32_t>` |
+
+### Mesh Analysis Helpers
+
+These helpers let callers inspect foreign mesh buffers before writing, without first copying into `Mesh`:
+
+| Function | Description |
+|----------|-------------|
+| `AnalyzeSignedTriangleBuffer(vertices, signed_indices, mode)` | Analyze external vertex buffers plus signed triangle indices (e.g. `int32_t` / `Vec3i`) |
+| `AnalyzeMesh(mesh, mode)` | Analyze an already-normalized `MeshView` / `Mesh` |
+
+`MeshAnalysis::Valid()` reports whether any triangle referenced a negative or out-of-range vertex index. `MeshAnalysis::HasWritableTriangles()` reports whether anything remains after optional degenerate filtering.
 
 Layout safety is guaranteed by `static_assert` at compile time:
 
@@ -50,7 +67,7 @@ static_assert(alignof(IndexTriangle) == alignof(uint32_t));
 
 | Type | Description |
 |------|-------------|
-| `Document` | Complete 3MF document model (unit, language, objects, build items, metadata, extensions) |
+| `Document` | Move-only 3MF document model (unit, language, objects, build items, metadata, extensions, optional owned meshes) |
 | `ObjectType` | Enum: `Model`, `SolidSupport`, `Support`, `Surface`, `Other` |
 | `Object` | Mesh or component object with type, partnumber, per-object metadata, uuid |
 | `Component` | Intra-model object reference with transform |
@@ -62,6 +79,8 @@ static_assert(alignof(IndexTriangle) == alignof(uint32_t));
 | `CustomRelationship` | OPC relationship for vendor extensions |
 | `CustomContentType` | File extension to MIME type mapping |
 | `ProductionConfig` | Production Extension settings (enabled, merge, assembly transform, external metadata) |
+
+`Document` is move-only because an object's `MeshView` may point into the document's `owned_meshes`. Moving preserves those references; an implicit shallow copy would not provide an independent lifetime. Meshes added through the `MeshView` overload remain externally owned, so the caller must still keep those buffers alive through writing.
 
 ## Builder (`builder.h`)
 
@@ -119,7 +138,9 @@ static_assert(alignof(IndexTriangle) == alignof(uint32_t));
 | `AddCustomRelationship(rel)` | Add OPC relationship |
 | `AddCustomContentType(ct)` | Register file extension content type |
 
-**Lifecycle**: After `Build()` is called, the builder is consumed. Any subsequent method call throws `InputError`.
+**Lifecycle**: `DocumentBuilder` is move-only. After `Build()` is called, the builder is consumed; any subsequent method call throws `InputError`.
+
+`Build()` and every `Write*` entry point validate the low-cost structural constraints needed for Core output: resource ID uniqueness/range, collection bounds, mesh completeness and finite coordinates, index and material references, metadata namespace use, finite transforms, component references/cycles, and thumbnail validity. This validation intentionally does not perform manifold, closed-volume, winding, or self-intersection analysis.
 
 ## Writer (`writer.h`)
 
@@ -139,7 +160,10 @@ static_assert(alignof(IndexTriangle) == alignof(uint32_t));
 | `deterministic` | `bool` | `true` | Zero timestamps for reproducible output |
 | `compact_xml` | `bool` | `false` | Omit XML indentation (~15-20% smaller) |
 | `vertex_precision` | `int` | `9` | Significant digits for vertex coordinates (1-9). Transform matrices always use full precision |
+| `triangle_write_mode` | `TriangleWriteMode` | `Keep` | Keep triangles with distinct indices (including zero-area geometry), or skip index/area-degenerate triangles during XML output |
 | `watermark` | `WatermarkConfig` | (disabled) | L1 triangle-rotation watermark configuration |
+
+`Keep` rejects a triangle that repeats a vertex index because Core output cannot represent it as a valid triangle. `FilterDegenerate` removes repeated-index and zero-area triangles and rejects an object if filtering leaves it with no triangles.
 
 ### WatermarkConfig
 
@@ -183,29 +207,48 @@ All watermark types and functions are available in Python. `vector<uint8_t>` fie
 | `HasL2Signature(data)` | `has_l2_signature(data: bytes) -> bool` |
 | `WriteOptions.watermark` | `WatermarkConfig` (read-write) |
 
-## Python `add_mesh_object` NumPy Overloads
+## Python NumPy Mesh APIs
 
-In addition to accepting a `Mesh` object, `DocumentBuilder.add_mesh_object()` accepts NumPy arrays directly. nanobind selects the best overload based on array dtypes:
+The Python binding provides separate convenience and strict-performance paths:
+
+| API | Ownership / conversion behavior |
+|-----|---------------------------------|
+| `Mesh.from_arrays(vertices, triangles)` | Always creates an owning `Mesh` and copies/converts the arrays |
+| `builder.add_mesh_object(name, vertices, triangles, ...)` | Automatically uses zero-copy for compatible arrays and otherwise copies/converts |
+| `builder.add_mesh_object_zero_copy(name, vertices, triangles, ...)` | Requires an exact zero-copy layout and never performs an implicit conversion |
+| `analyze_mesh(vertices, triangles, mode=TriangleWriteMode.Keep)` | Analyzes an exact zero-copy layout without constructing an owning `Mesh` |
+
+`add_mesh_object_zero_copy()` and the NumPy overloads of `analyze_mesh()` require:
+
+- CPU NumPy arrays with shapes `(N, 3)` and `(M, 3)`
+- C-contiguous, suitably aligned storage
+- `float32` vertices
+- `uint32` or `int32` triangle indices
+
+Read-only arrays are accepted because the library never writes to mesh buffers. A dtype, shape, device, or contiguity mismatch raises `TypeError`; an incompatible pointer alignment raises `InputError`. No temporary conversion is used to make an input fit this API.
+
+The automatic `add_mesh_object()` overload retains the existing compatibility behavior:
 
 | Vertex dtype | Triangle dtype | Path | Typical source |
 |-------------|---------------|------|----------------|
-| float32 | uint32 | **Zero-copy** | Custom / GPU data |
-| float32 | int32 | **Zero-copy** (reinterpret) | Open3D tensor API |
+| float32 | uint32 | **Zero-copy** | Native 3MF-style CPU buffer |
+| float32 | int32 | **Zero-copy** (same 32-bit representation) | Open3D tensor API |
 | float64 | int32 | Fast conversion | Open3D legacy, pymeshlab |
 | float64 | int64 | Fast conversion | trimesh, PyVista, meshio |
 | float64 | uint32 | Fast conversion | — |
 | float32 | int64 | Fast conversion | — |
 
-**Lifetime management**: Zero-copy overloads use `keep_alive` to ensure NumPy arrays are not garbage-collected while referenced by `DocumentBuilder` → `Document`. Conversion overloads copy data into the builder, so arrays can be freed immediately.
-
 ```python
 builder = n3mf.DocumentBuilder()
 
-# Same method, different input types:
-obj1 = builder.add_mesh_object("Part1", mesh)                     # Mesh object
-obj2 = builder.add_mesh_object("Part2", verts_f32, tris_u32)      # zero-copy
-obj3 = builder.add_mesh_object("Part3", verts_f64, tris_i64)      # conversion
+obj1 = builder.add_mesh_object("Owned", mesh)
+obj2 = builder.add_mesh_object("Automatic", verts_f64, tris_i64)
+obj3 = builder.add_mesh_object_zero_copy("Strict", verts_f32, tris_u32)
 ```
+
+**Lifetime and mutation contract**: the zero-copy arrays are kept alive through `DocumentBuilder` and the resulting `Document`. Their current contents are read during every `write_to_*()` call, so content changes made before a write are observable. Do not resize, reshape in place, reallocate, or concurrently mutate either array while the document may be written. References are released when the builder/document lifetime ends. Conversion paths own an independent copy and do not retain the source arrays.
+
+`int32` buffers are not scanned by `add_mesh_object_zero_copy()` itself. Normal `build()` / writer validation still rejects negative and out-of-range indices. Use `analyze_mesh()` when the caller needs the bbox, source/written triangle counts, degenerate count, or an explicit preflight result. `TriangleWriteMode` and `WriteOptions.triangle_write_mode` are both exposed in Python, so analysis and writer-side degenerate filtering use the same policy.
 
 ## Error Types (`error.h`)
 

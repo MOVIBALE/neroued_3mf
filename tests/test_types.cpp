@@ -1,3 +1,4 @@
+#include "neroued/3mf/error.h"
 #include "neroued/3mf/types.h"
 
 #include <gtest/gtest.h>
@@ -140,6 +141,64 @@ TEST(Mesh, Append) {
     EXPECT_EQ(a.triangles[1].v3, 5u);
 }
 
+TEST(Mesh, AppendSelf) {
+    n3mf::Mesh mesh;
+    mesh.vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    mesh.triangles = {{0, 1, 2}};
+
+    mesh.Append(mesh.View());
+
+    ASSERT_EQ(mesh.VertexCount(), 6u);
+    ASSERT_EQ(mesh.TriangleCount(), 2u);
+    EXPECT_EQ(mesh.triangles[1], (n3mf::IndexTriangle{3, 4, 5}));
+}
+
+TEST(Mesh, AppendPreservesCompatibleTriangleProperties) {
+    n3mf::Mesh a;
+    a.vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    a.triangles = {{0, 1, 2}};
+    a.triangle_properties = {{1, 0, 0, 0}};
+
+    n3mf::Mesh b;
+    b.vertices = {{2, 0, 0}, {3, 0, 0}, {2, 1, 0}};
+    b.triangles = {{0, 1, 2}};
+    b.triangle_properties = {{1, 1, 1, 1}};
+
+    a.Append(b.View());
+
+    ASSERT_EQ(a.triangle_properties.size(), 2u);
+    EXPECT_EQ(a.triangle_properties[1], (n3mf::TriangleProperty{1, 1, 1, 1}));
+}
+
+TEST(Mesh, AppendIntoEmptyAdoptsTriangleProperties) {
+    n3mf::Mesh source;
+    source.vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    source.triangles = {{0, 1, 2}};
+    source.triangle_properties = {{1, 0, 0, 0}};
+
+    n3mf::Mesh destination;
+    destination.Append(source.View());
+
+    EXPECT_EQ(destination.vertices, source.vertices);
+    EXPECT_EQ(destination.triangles, source.triangles);
+    EXPECT_EQ(destination.triangle_properties, source.triangle_properties);
+}
+
+TEST(Mesh, AppendRejectsIncompatibleTriangleProperties) {
+    n3mf::Mesh a;
+    a.vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    a.triangles = {{0, 1, 2}};
+    a.triangle_properties = {{1, 0, 0, 0}};
+
+    n3mf::Mesh b;
+    b.vertices = {{2, 0, 0}, {3, 0, 0}, {2, 1, 0}};
+    b.triangles = {{0, 1, 2}};
+
+    EXPECT_THROW(a.Append(b.View()), n3mf::InputError);
+    EXPECT_EQ(a.VertexCount(), 3u);
+    EXPECT_EQ(a.TriangleCount(), 1u);
+}
+
 TEST(Mesh, ImplicitConversionToMeshView) {
     n3mf::Mesh m;
     m.vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
@@ -210,6 +269,27 @@ TEST(AsTriangleSpan, FromLayoutCompatibleStruct) {
     EXPECT_EQ(span[0].v3, 30u);
 }
 
+TEST(AsSignedIndexSpan, FromRawInt32Pointer) {
+    int32_t data[] = {0, 1, 2, -1, 4, 5};
+    auto span = n3mf::AsSignedIndexSpan(data, 2);
+    EXPECT_EQ(span.size(), 6u);
+    EXPECT_EQ(span[0], 0);
+    EXPECT_EQ(span[3], -1);
+    EXPECT_EQ(span[5], 5);
+}
+
+TEST(AsSignedIndexSpan, FromLayoutCompatibleStruct) {
+    struct MySignedTri {
+        int32_t a, b, c;
+    };
+    MySignedTri data[] = {{10, 20, 30}, {-1, 4, 5}};
+    auto span = n3mf::AsSignedIndexSpan(data, 2);
+    EXPECT_EQ(span.size(), 6u);
+    EXPECT_EQ(span[0], 10);
+    EXPECT_EQ(span[2], 30);
+    EXPECT_EQ(span[3], -1);
+}
+
 TEST(AsVertexSpan, UsableInMeshView) {
     float verts[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
     uint32_t tris[] = {0, 1, 2};
@@ -221,4 +301,75 @@ TEST(AsVertexSpan, UsableInMeshView) {
     EXPECT_EQ(view.vertices.size(), 3u);
     EXPECT_EQ(view.triangles.size(), 1u);
     EXPECT_FLOAT_EQ(view.vertices[2].y, 1.0f);
+}
+
+TEST(AnalyzeMesh, KeepModeCountsDegenerateButKeepsTriangleCount) {
+    n3mf::Mesh mesh;
+    mesh.vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    mesh.triangles = {{0, 0, 1}, {0, 1, 2}};
+
+    auto analysis = n3mf::AnalyzeMesh(mesh.View(), n3mf::TriangleWriteMode::Keep);
+    EXPECT_TRUE(analysis.Valid());
+    EXPECT_EQ(analysis.source_triangle_count, 2u);
+    EXPECT_EQ(analysis.written_triangle_count, 2u);
+    EXPECT_EQ(analysis.degenerate_count, 1u);
+    EXPECT_EQ(analysis.out_of_range_count, 0u);
+    EXPECT_FLOAT_EQ(analysis.bbox.min.x, 0.0f);
+    EXPECT_FLOAT_EQ(analysis.bbox.max.y, 1.0f);
+}
+
+TEST(AnalyzeMesh, FilterModeSkipsDegenerateTriangles) {
+    n3mf::Mesh mesh;
+    mesh.vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    mesh.triangles = {{0, 0, 1}, {0, 1, 2}};
+
+    auto analysis = n3mf::AnalyzeMesh(mesh.View(), n3mf::TriangleWriteMode::FilterDegenerate);
+    EXPECT_TRUE(analysis.Valid());
+    EXPECT_EQ(analysis.source_triangle_count, 2u);
+    EXPECT_EQ(analysis.written_triangle_count, 1u);
+    EXPECT_EQ(analysis.degenerate_count, 1u);
+    EXPECT_EQ(analysis.out_of_range_count, 0u);
+    EXPECT_TRUE(analysis.HasWritableTriangles());
+}
+
+TEST(AnalyzeSignedTriangleBuffer, DetectsNegativeAndOutOfRangeIndices) {
+    float verts[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    int32_t tris[] = {-1, 1, 2, 0, 1, 5, 0, 1, 2};
+
+    auto analysis = n3mf::AnalyzeSignedTriangleBuffer(n3mf::AsVertexSpan(verts, 3),
+                                                      n3mf::AsSignedIndexSpan(tris, 3),
+                                                      n3mf::TriangleWriteMode::FilterDegenerate);
+    EXPECT_FALSE(analysis.Valid());
+    EXPECT_EQ(analysis.source_triangle_count, 3u);
+    EXPECT_EQ(analysis.written_triangle_count, 1u);
+    EXPECT_EQ(analysis.degenerate_count, 0u);
+    EXPECT_EQ(analysis.out_of_range_count, 2u);
+    EXPECT_FLOAT_EQ(analysis.bbox.max.x, 1.0f);
+    EXPECT_FLOAT_EQ(analysis.bbox.max.y, 1.0f);
+}
+
+TEST(AnalyzeSignedTriangleBuffer, FiltersDegenerateTrianglesFromLayoutCompatibleInput) {
+    struct MySignedTri {
+        int32_t a, b, c;
+    };
+
+    n3mf::Vec3f verts[] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    MySignedTri tris[] = {{0, 0, 1}, {0, 1, 2}};
+
+    auto analysis = n3mf::AnalyzeSignedTriangleBuffer(n3mf::AsVertexSpan(verts, 3),
+                                                      n3mf::AsSignedIndexSpan(tris, 2),
+                                                      n3mf::TriangleWriteMode::FilterDegenerate);
+    EXPECT_TRUE(analysis.Valid());
+    EXPECT_EQ(analysis.source_triangle_count, 2u);
+    EXPECT_EQ(analysis.written_triangle_count, 1u);
+    EXPECT_EQ(analysis.degenerate_count, 1u);
+    EXPECT_EQ(analysis.out_of_range_count, 0u);
+}
+
+TEST(AnalyzeSignedTriangleBuffer, RejectsNonTripletSpan) {
+    n3mf::Vec3f verts[] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    int32_t bad_indices[] = {0, 1, 2, 3};
+
+    EXPECT_THROW(n3mf::AnalyzeSignedTriangleBuffer(n3mf::AsVertexSpan(verts, 3), bad_indices),
+                 n3mf::InputError);
 }
