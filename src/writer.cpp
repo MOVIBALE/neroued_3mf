@@ -11,11 +11,14 @@
 #include "opc.h"
 #include "zip.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <ostream>
 #include <random>
 #include <system_error>
+#include <unordered_map>
 
 namespace neroued_3mf {
 
@@ -156,27 +159,89 @@ void WriteAllEntries(detail::StreamingZipWriter &zip, const Document &doc,
     auto zip_sink = [&](std::string_view chunk) { zip.WriteChunk(chunk.data(), chunk.size()); };
 
     if (doc.production.enabled) {
-        if (doc.production.merge_objects) {
+        const auto production_layout = detail::BuildProductionLayout(doc);
+        if (!doc.production.groups.empty()) {
+            std::unordered_map<uint32_t, std::size_t> object_indices;
+            object_indices.reserve(doc.objects.size());
+            std::vector<std::size_t> triangle_offsets(doc.objects.size(), 0);
+            std::size_t triangle_offset = 0;
+            for (std::size_t i = 0; i < triangle_write_plans.size(); ++i) {
+                triangle_offsets[i] = triangle_offset;
+                object_indices.emplace(doc.objects[i].id, i);
+                triangle_offset += triangle_write_plans[i].written_triangle_count;
+            }
+
+            for (std::size_t group_index = 0; group_index < production_layout.groups.size();
+                 ++group_index) {
+                const auto &group_layout = production_layout.groups[group_index];
+                Document group_doc;
+                group_doc.unit = doc.unit;
+                group_doc.language = doc.language;
+                group_doc.base_material_groups = doc.base_material_groups;
+                group_doc.production.external_model_metadata =
+                    doc.production.external_model_metadata;
+                group_doc.custom_namespaces = doc.custom_namespaces;
+
+                std::vector<detail::TriangleWritePlan> group_triangle_plans;
+                std::vector<uint8_t> group_rotation_table;
+                group_doc.objects.reserve(group_layout.objects.size());
+                group_triangle_plans.reserve(group_layout.objects.size());
+                for (const auto &object_layout : group_layout.objects) {
+                    const auto object_it = object_indices.find(object_layout.object_id);
+                    if (object_it == object_indices.end()) {
+                        throw InputError("Production layout references missing object id " +
+                                         std::to_string(object_layout.object_id));
+                    }
+                    const auto object_index = object_it->second;
+                    group_doc.objects.push_back(doc.objects[object_index]);
+                    group_triangle_plans.push_back(triangle_write_plans[object_index]);
+                    if (!rotation_table.empty()) {
+                        const auto begin =
+                            rotation_table.begin() +
+                            static_cast<std::ptrdiff_t>(triangle_offsets[object_index]);
+                        const auto end =
+                            begin + static_cast<std::ptrdiff_t>(
+                                        triangle_write_plans[object_index].written_triangle_count);
+                        group_rotation_table.insert(group_rotation_table.end(), begin, end);
+                    }
+                }
+
+                std::string external_path = group_layout.path;
+                if (!external_path.empty() && external_path.front() == '/') {
+                    external_path.erase(0, 1);
+                }
+                zip.BeginDeflateEntry(external_path);
+                detail::StreamMeshXml(group_doc, detail::MeshXmlFormat::ObjectsModel,
+                                      opts.compact_xml, opts.vertex_precision, group_rotation_table,
+                                      0, group_triangle_plans, zip_sink);
+                zip.EndEntry();
+            }
+        } else if (doc.production.merge_objects) {
             Document merged_doc;
             merged_doc.unit = doc.unit;
             merged_doc.language = doc.language;
             merged_doc.objects = doc.objects;
+            merged_doc.base_material_groups = doc.base_material_groups;
             merged_doc.production = doc.production;
             merged_doc.custom_namespaces = doc.custom_namespaces;
 
-            zip.BeginDeflateEntry("3D/Objects/object_1.model");
+            std::string ext_path = production_layout.external_objects.front().path;
+            if (!ext_path.empty() && ext_path.front() == '/') { ext_path.erase(0, 1); }
+            zip.BeginDeflateEntry(ext_path);
             detail::StreamMeshXml(merged_doc, detail::MeshXmlFormat::ObjectsModel, opts.compact_xml,
                                   opts.vertex_precision, rt, 0, triangle_write_plans, zip_sink);
             zip.EndEntry();
         } else {
             std::size_t tri_offset = 0;
             for (std::size_t i = 0; i < doc.objects.size(); ++i) {
-                std::string ext_path = "3D/Objects/object_" + std::to_string(i + 1) + ".model";
+                std::string ext_path = production_layout.external_objects[i].path;
+                if (!ext_path.empty() && ext_path.front() == '/') { ext_path.erase(0, 1); }
 
                 Document single_doc;
                 single_doc.unit = doc.unit;
                 single_doc.language = doc.language;
                 single_doc.objects = {doc.objects[i]};
+                single_doc.base_material_groups = doc.base_material_groups;
                 single_doc.production = doc.production;
                 single_doc.custom_namespaces = doc.custom_namespaces;
 

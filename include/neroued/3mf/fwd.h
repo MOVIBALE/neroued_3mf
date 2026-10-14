@@ -32,6 +32,10 @@ struct Thumbnail;
 struct CustomPart;
 struct CustomRelationship;
 struct CustomContentType;
+struct ProductionObjectLayout;
+struct ProductionGroup;
+struct ProductionGroupLayout;
+struct ProductionLayout;
 struct Document;
 
 class DocumentBuilder;

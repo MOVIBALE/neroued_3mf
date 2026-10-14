@@ -69,16 +69,20 @@ static_assert(alignof(IndexTriangle) == alignof(uint32_t));
 |------|-------------|
 | `Document` | Move-only 3MF document model (unit, language, objects, build items, metadata, extensions, optional owned meshes) |
 | `ObjectType` | Enum: `Model`, `SolidSupport`, `Support`, `Surface`, `Other` |
-| `Object` | Mesh or component object with type, partnumber, per-object metadata, uuid |
+| `Object` | Mesh or component object with type, partnumber, per-object metadata, uuid and independent Production component_uuid |
 | `Component` | Intra-model object reference with transform |
-| `BuildItem` | Build plate item with transform, partnumber, uuid |
+| `BuildItem` | Build plate item with transform, partnumber, uuid and caller-supplied XML attributes |
 | `Metadata` | Name-value pair with optional type annotation |
 | `XmlNamespace` | XML namespace declaration (prefix + URI) for model root elements |
 | `Thumbnail` | Binary image data (PNG/JPEG) for package thumbnail |
 | `CustomPart` | Arbitrary ZIP entry (path + content type + binary data) for vendor extensions |
 | `CustomRelationship` | OPC relationship for vendor extensions |
 | `CustomContentType` | File extension to MIME type mapping |
-| `ProductionConfig` | Production Extension settings (enabled, merge, assembly transform, external metadata) |
+| `ProductionConfig` | Production Extension settings (enabled, merge, assembly transform, external metadata, build/assembly UUIDs and explicit groups) |
+| `ProductionGroup` | Named mesh IDs sharing one external model and one generated root assembly |
+| `ProductionObjectLayout` | Object ID and external model path (with the leading slash used by `p:path`) |
+| `ProductionGroupLayout` | Group assembly ID, name, external path and object layouts |
+| `ProductionLayout` | Root model path, implicit assembly ID, external object layouts and explicit group layouts |
 
 `Document` is move-only because an object's `MeshView` may point into the document's `owned_meshes`. Moving preserves those references; an implicit shallow copy would not provide an independent lifetime. Meshes added through the `MeshView` overload remain externally owned, so the caller must still keep those buffers alive through writing.
 
@@ -111,6 +115,7 @@ static_assert(alignof(IndexTriangle) == alignof(uint32_t));
 | `SetObjectType(id, type)` | Set object type |
 | `SetPartNumber(id, partnumber)` | Set object part number |
 | `SetObjectUUID(id, uuid)` | Set Production Extension `p:UUID` |
+| `SetComponentUUID(id, uuid)` | Set independent `p:UUID` for the Production component reference; defaults to the object's UUID when empty |
 | `AddObjectMetadata(id, name, value, type)` | Add per-object metadata |
 | `SetComponentTransform(id, transform)` | Set transform for Production component reference |
 
@@ -119,6 +124,7 @@ static_assert(alignof(IndexTriangle) == alignof(uint32_t));
 | Method | Description |
 |--------|-------------|
 | `AddBuildItem(id, transform, partnumber, uuid)` | Add build plate item |
+| `AddBuildItem(id, transform, partnumber, uuid, attributes)` | Add build plate item with `std::map<std::string, std::string>` XML attributes |
 | `SetThumbnail(data, content_type)` | Set package thumbnail (PNG or JPEG) |
 | `Build()` | Validate, consume builder state, return `Document` |
 
@@ -128,7 +134,19 @@ static_assert(alignof(IndexTriangle) == alignof(uint32_t));
 |--------|-------------|
 | `EnableProduction(assembly_transform)` | Enable Production mode (auto-registers `p` namespace) |
 | `SetProductionMergeObjects(merge)` | All objects in single external file (Bambu Studio compatible) |
+| `SetProductionBuildUUID(uuid)` | Set `p:UUID` on the root `<build>` |
+| `SetProductionAssemblyUUID(uuid)` | Set `p:UUID` on the implicit assembly object |
 | `AddExternalModelMetadata(name, value, type)` | Metadata for external `.model` files |
+| `AddProductionGroup(name, object_ids, uuid)` | Register mesh IDs in one external model; returns its root assembly ID |
+| `PlanProductionLayout()` | Return the writer's object/path layout without serializing or consuming meshes |
+
+**Explicit groups**: enable Production with the identity assembly transform, register every mesh object in exactly one group, and add exactly one build item per returned group assembly ID. Use each build item's transform/UUID and each group's UUID; the global assembly transform/UUID must remain unset. Core component objects cannot be members of these groups. Explicit groups take precedence over `merge_objects`.
+
+**Implicit assembly**: without groups, the existing per-object and merged modes are unchanged. They create one root assembly containing all objects, use `assembly_build_transform`, and take the item UUID, part number and additional attributes from the first build item. They do not create one root placement for every input build item.
+
+**Layout planning**: register objects, groups and build items before planning. Planning checks group membership and build references, but does not scan mesh data. Returned layouts are snapshots: additions to the builder require planning again. `assembly_id` is meaningful only for the implicit assembly; use `groups[i].assembly_id` for explicit groups. `Build()` and writing still perform full structural validation. External model files contain the document's base material groups, so their object and triangle material IDs resolve within the correct model part.
+
+**Additional attributes**: Python uses `attributes={"vendor:label": "value"}` on `add_build_item()` and `BuildItem`. Names use ASCII XML name characters, with an optional declared namespace prefix. Standard item fields, namespace declarations and Production UUIDs cannot be overridden; duplicate expanded names and invalid XML control characters are rejected. Values are escaped, including tab/CR/LF numeric references. Unqualified custom names can be emitted for compatibility with existing consumers, but conforming 3MF extensions must use their own namespace. The library does not assign slicer-specific meaning to these attributes.
 
 ### Vendor Extensions
 

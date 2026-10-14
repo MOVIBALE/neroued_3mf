@@ -163,6 +163,57 @@ builder.EnableProduction(neroued_3mf::Transform::Translation(128, 128, 0))
     .SetProductionMergeObjects(true);
 ```
 
+### Explicit External Model Groups
+
+Keep two independent multi-part models on one build plate, each backed by its own external model file. The layout plan can also supply object IDs and paths to a separate metadata generator:
+
+```cpp
+using namespace neroued_3mf;
+DocumentBuilder builder;
+builder.EnableProduction();
+builder.AddNamespace("vendor", "https://example.org/3mf/production");
+const auto materials = builder.AddBaseMaterialGroup({
+    {"Red", Color::FromHex("#FF0000FF")},
+    {"Blue", Color::FromHex("#0000FFFF")},
+});
+
+Mesh mesh;
+mesh.vertices = {{0, 0, 0}, {10, 0, 0}, {5, 10, 0}};
+mesh.triangles = {{0, 1, 2}};
+auto second_mesh = mesh;
+const auto red = builder.AddMeshObject("Red part", std::move(mesh), materials, 0);
+const auto blue = builder.AddMeshObject("Blue part", std::move(second_mesh), materials, 1);
+const auto first = builder.AddProductionGroup("First model", {red});
+const auto second = builder.AddProductionGroup("Second model", {blue});
+builder.AddBuildItem(first, Transform::Translation(20, 20, 0), "first", "",
+                     {{"vendor:label", "first & independent"}});
+builder.AddBuildItem(second, Transform::Translation(50, 20, 0));
+const auto layout = builder.PlanProductionLayout();
+// layout.groups[0].path == "/3D/Objects/object_1.model"
+// layout.groups[1].assembly_id == second
+WriteToFile("grouped-production.3mf", builder.Build());
+```
+
+Python exposes the same API and layout types:
+
+```python
+import neroued_3mf as n3mf
+
+builder = n3mf.DocumentBuilder()
+builder.enable_production()
+builder.add_namespace("vendor", "https://example.org/3mf/production")
+mesh = n3mf.Mesh()
+mesh.vertices = [n3mf.Vec3f(0, 0, 0), n3mf.Vec3f(10, 0, 0), n3mf.Vec3f(5, 10, 0)]
+mesh.triangles = [n3mf.IndexTriangle(0, 1, 2)]
+obj = builder.add_mesh_object("Part", mesh)
+assembly = builder.add_production_group("Independent model", [obj])
+builder.add_build_item(assembly, attributes={"vendor:label": "user-selected model"})
+layout = builder.plan_production_layout()
+n3mf.write_to_file("grouped-production.3mf", builder.build())
+```
+
+Group members must be mesh objects, every mesh must belong to exactly one group, and each group must have one build item. Use per-item transforms for placement and `set_component_transform()` for relative part placement. Independent UUIDs can be supplied with `set_object_uuid()`, `set_component_uuid()`, `add_production_group(..., uuid=...)`, `add_build_item(..., uuid=...)` and `set_production_build_uuid()`.
+
 ## Custom Vendor Extensions (e.g. Bambu Studio)
 
 The library is vendor-neutral. Inject proprietary metadata through the generic extension API:

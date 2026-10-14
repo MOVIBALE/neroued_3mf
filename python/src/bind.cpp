@@ -7,6 +7,7 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/filesystem.h>
+#include <nanobind/stl/map.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
@@ -427,6 +428,7 @@ NB_MODULE(_neroued_3mf, m) {
         .def_ro("metadata", &n3mf::Object::metadata)
         .def_ro("component_transform", &n3mf::Object::component_transform)
         .def_ro("uuid", &n3mf::Object::uuid)
+        .def_ro("component_uuid", &n3mf::Object::component_uuid)
         .def("__repr__", [](const n3mf::Object &o) {
             return "Object(id=" + std::to_string(o.id) + ", name='" + o.name + "')";
         });
@@ -437,16 +439,18 @@ NB_MODULE(_neroued_3mf, m) {
         .def(
             "__init__",
             [](n3mf::BuildItem *self, uint32_t object_id, n3mf::Transform transform,
-               std::string partnumber, std::string uuid) {
-                new (self)
-                    n3mf::BuildItem{object_id, transform, std::move(partnumber), std::move(uuid)};
+               std::string partnumber, std::string uuid,
+               std::map<std::string, std::string> attributes) {
+                new (self) n3mf::BuildItem{object_id, transform, std::move(partnumber),
+                                           std::move(uuid), std::move(attributes)};
             },
             "object_id"_a = 0u, "transform"_a = n3mf::Transform::Identity(), "partnumber"_a = "",
-            "uuid"_a = "")
+            "uuid"_a = "", "attributes"_a = std::map<std::string, std::string>{})
         .def_rw("object_id", &n3mf::BuildItem::object_id)
         .def_rw("transform", &n3mf::BuildItem::transform)
         .def_rw("partnumber", &n3mf::BuildItem::partnumber)
-        .def_rw("uuid", &n3mf::BuildItem::uuid);
+        .def_rw("uuid", &n3mf::BuildItem::uuid)
+        .def_rw("attributes", &n3mf::BuildItem::attributes);
 
     // ---- Thumbnail ---------------------------------------------------------
 
@@ -512,6 +516,15 @@ NB_MODULE(_neroued_3mf, m) {
         .def_rw("extension", &n3mf::CustomContentType::extension)
         .def_rw("content_type", &n3mf::CustomContentType::content_type);
 
+    // ---- Production group --------------------------------------------------
+
+    nb::class_<n3mf::ProductionGroup>(m, "ProductionGroup")
+        .def(nb::init<>())
+        .def_ro("assembly_id", &n3mf::ProductionGroup::assembly_id)
+        .def_ro("name", &n3mf::ProductionGroup::name)
+        .def_ro("object_ids", &n3mf::ProductionGroup::object_ids)
+        .def_ro("uuid", &n3mf::ProductionGroup::uuid);
+
     // ---- Document::ProductionConfig ----------------------------------------
 
     nb::class_<n3mf::Document::ProductionConfig>(m, "ProductionConfig")
@@ -520,6 +533,9 @@ NB_MODULE(_neroued_3mf, m) {
         .def_ro("assembly_build_transform",
                 &n3mf::Document::ProductionConfig::assembly_build_transform)
         .def_ro("merge_objects", &n3mf::Document::ProductionConfig::merge_objects)
+        .def_ro("build_uuid", &n3mf::Document::ProductionConfig::build_uuid)
+        .def_ro("assembly_uuid", &n3mf::Document::ProductionConfig::assembly_uuid)
+        .def_ro("groups", &n3mf::Document::ProductionConfig::groups)
         .def_ro("external_model_metadata",
                 &n3mf::Document::ProductionConfig::external_model_metadata);
 
@@ -544,6 +560,27 @@ NB_MODULE(_neroued_3mf, m) {
                    ", objects=" + std::to_string(doc.objects.size()) +
                    ", build_items=" + std::to_string(doc.build_items.size()) + ")";
         });
+
+    // ---- Production layout plan -------------------------------------------
+
+    nb::class_<n3mf::ProductionObjectLayout>(m, "ProductionObjectLayout")
+        .def(nb::init<>())
+        .def_ro("object_id", &n3mf::ProductionObjectLayout::object_id)
+        .def_ro("path", &n3mf::ProductionObjectLayout::path);
+
+    nb::class_<n3mf::ProductionGroupLayout>(m, "ProductionGroupLayout")
+        .def(nb::init<>())
+        .def_ro("assembly_id", &n3mf::ProductionGroupLayout::assembly_id)
+        .def_ro("name", &n3mf::ProductionGroupLayout::name)
+        .def_ro("path", &n3mf::ProductionGroupLayout::path)
+        .def_ro("objects", &n3mf::ProductionGroupLayout::objects);
+
+    nb::class_<n3mf::ProductionLayout>(m, "ProductionLayout")
+        .def(nb::init<>())
+        .def_ro("assembly_id", &n3mf::ProductionLayout::assembly_id)
+        .def_ro("main_model_path", &n3mf::ProductionLayout::main_model_path)
+        .def_ro("external_objects", &n3mf::ProductionLayout::external_objects)
+        .def_ro("groups", &n3mf::ProductionLayout::groups);
 
     // ---- WatermarkConfig ----------------------------------------------------
 
@@ -707,8 +744,15 @@ NB_MODULE(_neroued_3mf, m) {
         .def("set_object_uuid", &n3mf::DocumentBuilder::SetObjectUUID, "object_id"_a, "uuid"_a,
              nb::rv_policy::reference)
 
-        .def("add_build_item", &n3mf::DocumentBuilder::AddBuildItem, "object_id"_a,
-             "transform"_a = n3mf::Transform::Identity(), "partnumber"_a = "", "uuid"_a = "",
+        .def("set_component_uuid", &n3mf::DocumentBuilder::SetComponentUUID, "object_id"_a,
+             "uuid"_a, nb::rv_policy::reference)
+
+        .def("add_build_item",
+             nb::overload_cast<uint32_t, n3mf::Transform, std::string, std::string,
+                               std::map<std::string, std::string>>(
+                 &n3mf::DocumentBuilder::AddBuildItem),
+             "object_id"_a, "transform"_a = n3mf::Transform::Identity(), "partnumber"_a = "",
+             "uuid"_a = "", "attributes"_a = std::map<std::string, std::string>{},
              nb::rv_policy::reference)
 
         .def(
@@ -736,8 +780,19 @@ NB_MODULE(_neroued_3mf, m) {
         .def("set_production_merge_objects", &n3mf::DocumentBuilder::SetProductionMergeObjects,
              "merge"_a = true, nb::rv_policy::reference)
 
+        .def("set_production_build_uuid", &n3mf::DocumentBuilder::SetProductionBuildUUID, "uuid"_a,
+             nb::rv_policy::reference)
+
+        .def("set_production_assembly_uuid", &n3mf::DocumentBuilder::SetProductionAssemblyUUID,
+             "uuid"_a, nb::rv_policy::reference)
+
         .def("add_external_model_metadata", &n3mf::DocumentBuilder::AddExternalModelMetadata,
              "name"_a, "value"_a, "type"_a = "", nb::rv_policy::reference)
+
+        .def("add_production_group", &n3mf::DocumentBuilder::AddProductionGroup, "name"_a,
+             "object_ids"_a, "uuid"_a = "")
+
+        .def("plan_production_layout", &n3mf::DocumentBuilder::PlanProductionLayout)
 
         .def("build", &n3mf::DocumentBuilder::Build, nb::keep_alive<0, 1>());
 

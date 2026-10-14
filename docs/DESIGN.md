@@ -171,6 +171,14 @@ builder.AddBuildItem(obj_id);
 
 **组件变换**：`Object::component_transform` 指定该对象在 Production Extension 的 `<component>` 引用中使用的变换矩阵。
 
+**显式分组**：`ProductionConfig::groups` 为每组 mesh 分配独立的主模型装配体和外部文件；调用方用返回的 assembly ID 添加唯一 BuildItem，分别指定位置和 UUID。所有 mesh 必须且只能归属一组，组成员不能是 Core component object。无分组时保留既有的单一装配体行为。
+
+**共享布局计划**：`DocumentBuilder::PlanProductionLayout()` 与 OPC/写包流程共用 `BuildProductionLayout()`，在不序列化 mesh 的情况下返回对象 ID、装配体 ID 和外部文件路径。轻量分组校验同样供规划和 Document 校验使用；后续 mesh 校验仍由 Build/Write 完成。
+
+**材料与标识**：外部 model 的 resources 包含 base material groups，使本文件的 pid/pindex 和 triangle properties 可正确解析。Object UUID、component 引用 UUID、assembly UUID、build UUID 和 item UUID 分别保存；未指定 component UUID 时兼容沿用 Object UUID。
+
+**通用 BuildItem 属性**：`BuildItem::attributes` 保存调用方给出的 XML 属性，Core 和 Production 路径共用序列化函数。校验属性名、命名空间、重复展开名和保留字段，值统一转义并保留换行。切片器规则由调用方负责，写包库不包含机型或工艺逻辑。
+
 ### 2.6 Core Spec Components
 
 3MF 核心规范允许 Object 通过 `<components>` 引用其他 Object 构成装配体，无需 Production Extension。与 Production Extension 的外部文件引用不同，核心组件在同一 model 文件内通过 `objectid` 引用。
@@ -533,7 +541,7 @@ neroued_3mf/
 以下为当前版本已识别但尚未修复的问题，将在后续迭代中逐步解决：
 
 1. **Materials Extension 未实现** — ColorGroup / Texture2D / Texture2DGroup / CompositeMaterials / MultiProperties 均不支持，仅有 BaseMaterial。这是 Phase 2 的高优先级项。
-2. **Model XML 无扩展注入点** — 无法在 `<object>`、`<resources>`、`<build>` 内部注入自定义 XML 元素或属性；仅支持文件级（CustomPart）和元数据级（Metadata）扩展。
+2. **Model XML 扩展注入范围有限** — 支持 BuildItem 自定义属性、文件级（CustomPart）和元数据级（Metadata）扩展；其它节点仍不能注入自定义 XML 元素或属性。
 3. **Production 模式 Object 拷贝** — `writer.cpp` 中为 `StreamMeshXml` 构造临时 Document 时会拷贝 Object（不含 mesh 数据），对象多时有性能开销；根因是 `StreamMeshXml` 参数耦合了完整 Document 结构。
 4. **OPC 装配 XML 非流式** — `opc.cpp` 的 Production 装配 XML 通过字符串拼接生成，不走 `XmlStreamBuffer`，`compact_xml` 选项对其无效。
 5. **EscapeXml 始终分配** — `xml_util.h` 的 `EscapeXml` 即使无需转义也分配新字符串，热路径上可优化为先扫描后条件分配。
