@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "neroued/3mf/document.h"
 #include "neroued/3mf/error.h"
 #include "neroued/3mf/types.h"
 
@@ -40,6 +41,37 @@ inline std::string EscapeXml(const std::string &s) {
         }
     }
     return out;
+}
+
+inline std::string EscapeXmlAttribute(const std::string &value) {
+    std::string out;
+    for (const char c : EscapeXml(value)) {
+        switch (c) {
+        case '\t':
+            out += "&#9;";
+            break;
+        case '\n':
+            out += "&#10;";
+            break;
+        case '\r':
+            out += "&#13;";
+            break;
+        default:
+            out.push_back(c);
+            break;
+        }
+    }
+    return out;
+}
+
+inline std::string SerializeBuildItemAttributes(const BuildItem &item) {
+    std::string xml;
+    if (!item.partnumber.empty()) { xml += " partnumber=\"" + EscapeXml(item.partnumber) + "\""; }
+    if (!item.uuid.empty()) { xml += " p:UUID=\"" + EscapeXml(item.uuid) + "\""; }
+    for (const auto &[name, value] : item.attributes) {
+        xml += " " + name + "=\"" + EscapeXmlAttribute(value) + "\"";
+    }
+    return xml;
 }
 
 inline std::string FormatFloat(float value) {

@@ -7,7 +7,7 @@ Lightweight C++20 library for writing [3MF](https://3mf.io/specification/) files
 - **Zero-copy streaming write** — `MeshView` references external buffers via `std::span`; hot path has zero heap allocations
 - **Three steps**: `DocumentBuilder` -> `Document` -> `WriteToFile` / `WriteToBuffer` / `WriteToStream`
 - **Vendor-neutral extensions** — inject arbitrary files, OPC relationships, and metadata without library changes
-- **Production Extension** — assembly models, external object files, merged mode, `p:UUID`
+- **Production Extension** — assembly models, external object files, merged or explicit grouped layouts, layout planning and independent `p:UUID` values
 - **No runtime dependencies** — C++20 standard library only (zlib optional for deflate compression)
 - **Python bindings** — `pip install neroued-3mf`, supports Python 3.10+ on all platforms with an explicit NumPy zero-copy path
 

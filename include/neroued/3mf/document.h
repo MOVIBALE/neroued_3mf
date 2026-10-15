@@ -10,6 +10,7 @@
 #include "types.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -57,6 +58,8 @@ struct Object {
 
     /// Production Extension p:UUID; empty = omit.
     std::string uuid;
+    /// Production Extension p:UUID for this object's root component reference.
+    std::string component_uuid;
 };
 
 struct BuildItem {
@@ -65,6 +68,9 @@ struct BuildItem {
     std::string partnumber;
     /// Production Extension p:UUID; empty = omit.
     std::string uuid;
+    /// Additional XML attributes supplied by the caller; values are XML-escaped.
+    /// Standard item attributes must use their dedicated fields above.
+    std::map<std::string, std::string> attributes;
 };
 
 struct Thumbnail {
@@ -90,6 +96,37 @@ struct CustomRelationship {
 struct CustomContentType {
     std::string extension;
     std::string content_type;
+};
+
+/// Read-only Production layout calculated from the same object/path rules as
+/// the OPC writer.  Paths use the leading slash required by p:path.
+struct ProductionObjectLayout {
+    uint32_t object_id = 0;
+    std::string path;
+};
+
+/// Explicit group of mesh objects written together to one external model.
+struct ProductionGroup {
+    uint32_t assembly_id = 0;
+    std::string name;
+    std::vector<uint32_t> object_ids;
+    /// Production Extension p:UUID for the generated assembly object.
+    std::string uuid;
+};
+
+/// Read-only layout for one explicit external Production model group.
+struct ProductionGroupLayout {
+    uint32_t assembly_id = 0;
+    std::string name;
+    std::string path;
+    std::vector<ProductionObjectLayout> objects;
+};
+
+struct ProductionLayout {
+    uint32_t assembly_id = 0;
+    std::string main_model_path = "3D/3dmodel.model";
+    std::vector<ProductionObjectLayout> external_objects;
+    std::vector<ProductionGroupLayout> groups;
 };
 
 struct Document {
@@ -120,6 +157,13 @@ struct Document {
         Transform assembly_build_transform = Transform::Identity();
         bool merge_objects = false;
         std::vector<Metadata> external_model_metadata;
+        /// Production Extension UUID for the root build element.
+        std::string build_uuid;
+        /// Production Extension UUID for the generated assembly object.
+        std::string assembly_uuid;
+        /// When non-empty, each group becomes one root assembly/build item and
+        /// one external model file. Objects must be assigned exactly once.
+        std::vector<ProductionGroup> groups;
     } production;
 
     /// Mesh data owned by this Document (populated when DocumentBuilder

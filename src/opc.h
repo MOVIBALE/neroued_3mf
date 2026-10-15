@@ -58,6 +58,10 @@ inline std::string_view ObjectTypeToStringView(ObjectType type) {
     return "model";
 }
 
+ProductionLayout BuildProductionLayout(std::span<const Object> objects, bool merge_objects);
+ProductionLayout BuildProductionLayout(std::span<const Object> objects,
+                                       const Document::ProductionConfig &production);
+ProductionLayout BuildProductionLayout(const Document &doc);
 std::vector<OpcPart> BuildOpcParts(const Document &doc);
 
 enum class MeshXmlFormat { FlatModel, ObjectsModel };
@@ -142,25 +146,29 @@ void StreamMeshXml(const Document &doc, MeshXmlFormat format, bool compact, int 
         buf.Append(i2);
         buf.Append("<resources>\n");
 
-        for (const auto &bmg : doc.base_material_groups) {
-            buf.Append(i4);
-            buf.Append("<basematerials id=\"");
-            buf.AppendUint32(bmg.id);
-            buf.Append("\">\n");
-            for (const auto &mat : bmg.materials) {
-                buf.Append(i6);
-                buf.Append("<base name=\"");
-                buf.Append(EscapeXml(mat.name));
-                buf.Append("\" displaycolor=\"");
-                buf.Append(EscapeXml(mat.display_color.ToHex()));
-                buf.Append("\"/>\n");
-            }
-            buf.Append(i4);
-            buf.Append("</basematerials>\n");
-        }
     } else {
         buf.Append(i2);
         buf.Append("<resources>\n");
+    }
+
+    // Material resources belong to the model part that owns the object. In
+    // Production mode this is an external ObjectsModel part, not only the
+    // flat root model path.
+    for (const auto &bmg : doc.base_material_groups) {
+        buf.Append(i4);
+        buf.Append("<basematerials id=\"");
+        buf.AppendUint32(bmg.id);
+        buf.Append("\">\n");
+        for (const auto &mat : bmg.materials) {
+            buf.Append(i6);
+            buf.Append("<base name=\"");
+            buf.Append(EscapeXml(mat.name));
+            buf.Append("\" displaycolor=\"");
+            buf.Append(EscapeXml(mat.display_color.ToHex()));
+            buf.Append("\"/>\n");
+        }
+        buf.Append(i4);
+        buf.Append("</basematerials>\n");
     }
 
     // -- Objects (hot path: zero heap allocations per vertex/triangle) --
@@ -457,21 +465,12 @@ void StreamMeshXml(const Document &doc, MeshXmlFormat format, bool compact, int 
             buf.Append("<item objectid=\"");
             buf.AppendUint32(item.object_id);
             buf.Append("\"");
-            if (!item.partnumber.empty()) {
-                buf.Append(" partnumber=\"");
-                buf.Append(EscapeXml(item.partnumber));
-                buf.Append("\"");
-            }
             if (!item.transform.IsIdentity()) {
                 buf.Append(" transform=\"");
                 buf.Append(SerializeTransform(item.transform));
                 buf.Append("\"");
             }
-            if (!item.uuid.empty()) {
-                buf.Append(" p:UUID=\"");
-                buf.Append(EscapeXml(item.uuid));
-                buf.Append("\"");
-            }
+            buf.Append(SerializeBuildItemAttributes(item));
             buf.Append("/>\n");
         }
         buf.Append(i2);

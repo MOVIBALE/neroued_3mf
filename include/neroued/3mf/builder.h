@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace neroued_3mf {
@@ -54,9 +55,14 @@ class DocumentBuilder {
                                        std::string type = "");
     DocumentBuilder &SetComponentTransform(uint32_t object_id, Transform transform);
     DocumentBuilder &SetObjectUUID(uint32_t object_id, std::string uuid);
+    DocumentBuilder &SetComponentUUID(uint32_t object_id, std::string uuid);
 
     DocumentBuilder &AddBuildItem(uint32_t object_id, Transform transform = Transform::Identity(),
                                   std::string partnumber = "", std::string uuid = "");
+
+    /// Add a build item with caller-supplied XML attributes.
+    DocumentBuilder &AddBuildItem(uint32_t object_id, Transform transform, std::string partnumber,
+                                  std::string uuid, std::map<std::string, std::string> attributes);
 
     DocumentBuilder &SetThumbnail(std::vector<uint8_t> data, std::string content_type);
 
@@ -66,8 +72,19 @@ class DocumentBuilder {
 
     DocumentBuilder &EnableProduction(Transform assembly_transform = Transform::Identity());
     DocumentBuilder &SetProductionMergeObjects(bool merge = true);
+    DocumentBuilder &SetProductionBuildUUID(std::string uuid);
+    DocumentBuilder &SetProductionAssemblyUUID(std::string uuid);
     DocumentBuilder &AddExternalModelMetadata(std::string name, std::string value,
                                               std::string type = "");
+
+    /// Register a group of mesh objects written to one external Production model.
+    /// Returns the generated root assembly object ID; add one BuildItem for it.
+    uint32_t AddProductionGroup(std::string name, std::vector<uint32_t> object_ids,
+                                std::string uuid = "");
+
+    /// Plan the Production assembly/object paths without serializing meshes.
+    /// The builder remains usable and can still be consumed by Build().
+    ProductionLayout PlanProductionLayout() const;
 
     /// Build the Document and transfer ownership of any owned meshes.
     /// After calling Build(), the builder is in a moved-from state for owned meshes.
@@ -93,6 +110,7 @@ class DocumentBuilder {
     std::vector<CustomRelationship> custom_relationships_;
     std::vector<CustomContentType> custom_content_types_;
     Document::ProductionConfig production_;
+    std::unordered_set<uint32_t> grouped_object_ids_;
 
     std::vector<Mesh> owned_meshes_;
     std::unordered_map<uint32_t, std::size_t> object_id_index_;

@@ -6,8 +6,10 @@
 #include "neroued/3mf/document.h"
 #include "neroued/3mf/error.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -51,6 +53,10 @@ inline std::unordered_set<std::string> ValidateNamespaces(const Document &doc) {
         if (ns.prefix == "xml" || ns.prefix == "xmlns") {
             throw InputError("XML namespace prefix \"" + ns.prefix + "\" is reserved");
         }
+        if (doc.production.enabled && ns.prefix == "p" &&
+            ns.uri != "http://schemas.microsoft.com/3dmanufacturing/production/2015/06") {
+            throw InputError("Production namespace prefix p must use the Production URI");
+        }
         if (!prefixes.insert(ns.prefix).second) {
             throw InputError("Duplicate XML namespace prefix \"" + ns.prefix + "\"");
         }
@@ -87,6 +93,121 @@ inline void ValidateMetadata(const std::vector<Metadata> &metadata,
                              "\"");
         }
     }
+}
+
+inline bool IsXmlAttributeNamePart(std::string_view name) {
+    if (name.empty()) { return false; }
+    const auto is_start = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+    };
+    if (!is_start(name.front())) { return false; }
+    return std::all_of(name.begin() + 1, name.end(), [is_start](char c) {
+        return is_start(c) || (c >= '0' && c <= '9') || c == '.' || c == '-';
+    });
+}
+
+inline void ValidateBuildItemAttributes(const BuildItem &item,
+                                        const std::vector<XmlNamespace> &namespaces) {
+    std::unordered_set<std::string> expanded_names;
+    for (const auto &[name, value] : item.attributes) {
+        const auto colon = name.find(':');
+        const auto prefix = std::string_view(name).substr(0, colon);
+        const auto local_name = colon == std::string::npos
+                                    ? std::string_view(name)
+                                    : std::string_view(name).substr(colon + 1);
+        if (!IsXmlAttributeNamePart(local_name) ||
+            (colon != std::string::npos && !IsXmlAttributeNamePart(prefix))) {
+            throw InputError("BuildItem has invalid XML attribute name \"" + name + "\"");
+        }
+        if (name == "objectid" || name == "transform" || name == "partnumber" ||
+            name == "printable" || name == "p:UUID" || name == "xmlns" ||
+            (colon != std::string::npos && prefix == "xmlns")) {
+            throw InputError("BuildItem attribute \"" + name + "\" is reserved");
+        }
+        if (colon != std::string::npos) {
+            const auto ns = std::find_if(
+                namespaces.begin(), namespaces.end(),
+                [prefix](const XmlNamespace &entry) { return entry.prefix == prefix; });
+            if (ns == namespaces.end()) {
+                throw InputError("BuildItem attribute uses undeclared namespace prefix \"" +
+                                 std::string(prefix) + "\"");
+            }
+            if (ns->uri == "http://schemas.microsoft.com/3dmanufacturing/production/2015/06" &&
+                local_name == "UUID") {
+                throw InputError("BuildItem UUID must use the dedicated uuid field");
+            }
+            const auto expanded_name = ns->uri + '\0' + std::string(local_name);
+            if (!expanded_names.insert(expanded_name).second) {
+                throw InputError("BuildItem has duplicate expanded XML attribute \"" + name + "\"");
+            }
+        }
+        for (const unsigned char c : value) {
+            if (c < 0x20 && c != '\t' && c != '\r' && c != '\n') {
+                throw InputError("BuildItem attribute \"" + name +
+                                 "\" contains an invalid XML control character");
+            }
+        }
+    }
+}
+
+inline std::unordered_set<uint32_t> ValidateProductionGroups(
+    std::span<const Object> objects, const Document::ProductionConfig &production,
+    std::span<const BuildItem> build_items, const std::unordered_set<uint32_t> &resource_ids) {
+    std::unordered_set<uint32_t> group_ids;
+    if (production.groups.empty()) { return group_ids; }
+    if (!production.enabled) { throw InputError("Production groups require Production mode"); }
+    if (!production.assembly_build_transform.IsIdentity() || !production.assembly_uuid.empty()) {
+        throw InputError("Explicit Production groups use per-group transforms and UUIDs");
+    }
+    std::unordered_map<uint32_t, const Object *> object_by_id;
+    object_by_id.reserve(objects.size());
+    for (const auto &object : objects) { object_by_id.emplace(object.id, &object); }
+    std::unordered_set<uint32_t> assigned_objects;
+    assigned_objects.reserve(objects.size());
+    for (const auto &group : production.groups) {
+        ValidateResourceId(group.assembly_id, "Production group assembly id");
+        if (resource_ids.contains(group.assembly_id) ||
+            !group_ids.insert(group.assembly_id).second) {
+            throw InputError("Duplicate resource id " + std::to_string(group.assembly_id));
+        }
+        if (group.name.empty()) { throw InputError("Production group name is empty"); }
+        if (group.object_ids.empty()) {
+            throw InputError("Production group " + group.name + " has no objects");
+        }
+        for (const auto object_id : group.object_ids) {
+            const auto object = object_by_id.find(object_id);
+            if (object == object_by_id.end()) {
+                throw InputError("Production group references non-existent object id " +
+                                 std::to_string(object_id));
+            }
+            if (!assigned_objects.insert(object_id).second) {
+                throw InputError("Production object id " + std::to_string(object_id) +
+                                 " appears in more than one group");
+            }
+            if (object->second->mesh.vertices.empty() || !object->second->components.empty()) {
+                throw InputError("Production groups require mesh objects; invalid id " +
+                                 std::to_string(object_id));
+            }
+        }
+    }
+    if (assigned_objects.size() != objects.size()) {
+        throw InputError("Every mesh object must belong to exactly one Production group");
+    }
+    std::unordered_set<uint32_t> built_groups;
+    for (const auto &item : build_items) {
+        if (!group_ids.contains(item.object_id)) {
+            throw InputError("BuildItem references non-existent Production group " +
+                             std::to_string(item.object_id));
+        }
+        if (!built_groups.insert(item.object_id).second) {
+            throw InputError("Production group has more than one BuildItem " +
+                             std::to_string(item.object_id));
+        }
+    }
+    if (built_groups != group_ids) {
+        throw InputError("Each Production group must have exactly one BuildItem");
+    }
+    return group_ids;
 }
 
 inline void DetectComponentCycles(uint32_t id,
@@ -148,13 +269,17 @@ inline void ValidateDocument(const Document &doc, bool reject_repeated_vertex_in
         object_ids.insert(obj.id);
     }
 
+    const auto production_group_ids =
+        ValidateProductionGroups(doc.objects, doc.production, doc.build_items, resource_ids);
     for (const auto &item : doc.build_items) {
-        if (!object_ids.contains(item.object_id)) {
+        const auto &valid_ids = doc.production.groups.empty() ? object_ids : production_group_ids;
+        if (!valid_ids.contains(item.object_id)) {
             throw InputError("BuildItem references non-existent object id " +
                              std::to_string(item.object_id));
         }
         ValidateTransform(item.transform,
                           "BuildItem for object " + std::to_string(item.object_id) + " transform");
+        ValidateBuildItemAttributes(item, doc.custom_namespaces);
     }
 
     for (const auto &obj : doc.objects) {
