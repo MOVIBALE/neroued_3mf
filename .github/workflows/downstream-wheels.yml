@@ -12,9 +12,9 @@ permissions:
   contents: read
 
 env:
-  SOURCE_COMMIT: a6043434d6cd9a2a76553ffdcdf0dda081d9b19c
-  SETUPTOOLS_SCM_PRETEND_VERSION: 0.4.0+fatcat.production.1
-  RELEASE_TAG: fatcat-production-1
+  SOURCE_COMMIT: d4cfaae39fa77a3458d9ad079b5d1bb1eafc5522
+  SETUPTOOLS_SCM_PRETEND_VERSION: 0.4.0+fatcat.production.2
+  RELEASE_TAG: fatcat-production-2
 
 jobs:
   wheels:
